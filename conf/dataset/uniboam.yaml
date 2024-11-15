@@ -1,5 +1,5 @@
 train:
-  paths: {uniref100: uniref/mila/uniref100_train.csv, oas: uniref/mila/oas_train.csv}
+  paths: {uniboam: uniref/mila/uniboam_train.csv}
   iterable: true
 
 

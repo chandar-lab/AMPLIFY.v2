@@ -4,6 +4,11 @@
 <bos>
 <eos>
 |
+X
+O
+U
+Z
+J
 L
 A
 G

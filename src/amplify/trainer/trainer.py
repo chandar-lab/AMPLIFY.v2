@@ -61,23 +61,25 @@ def trainer(cfg: DictConfig) -> None:
     if not config_check.is_ok():
         raise ConfigError(config_check)
     it = 0
-    chk_dir = os.path.join(cfg.trainer.dir, "checkpoints")
-    # Delete the folder if resume is disable and folder exists
+    full_checkpoint_dir = os.path.join(cfg.trainer.dir, "checkpoints")
+    model_checkpoint_dir = os.path.join(cfg.trainer.dir, "model_checkpoints")
+    os.makedirs(model_checkpoint_dir, exist_ok=True)
+    # Delete the folder if resume is disabled and folder exists
     if cfg.trainer.resume is False:
-        shutil.rmtree(chk_dir, ignore_errors=True)
-    elif os.path.exists(chk_dir):
+        shutil.rmtree(full_checkpoint_dir, ignore_errors=True)
+    elif os.path.exists(full_checkpoint_dir):
         # This regular expression was taken from accelerator.load_state()
-        it = max(int(re.findall(r"[\/]?([0-9]+)(?=[^\/]*$)", folder)[0]) for folder in os.listdir(chk_dir))
+        it = max(int(re.findall(r"[\/]?([0-9]+)(?=[^\/]*$)", folder)[0]) for folder in os.listdir(full_checkpoint_dir))
         # Remove empty checkpoint folders
-        while len(os.listdir(os.path.join(chk_dir, f"checkpoint_{it}"))) == 0:
-            shutil.rmtree(os.path.join(chk_dir, f"checkpoint_{it}"), ignore_errors=True)
+        while len(os.listdir(os.path.join(full_checkpoint_dir, f"checkpoint_{it}"))) == 0:
+            shutil.rmtree(os.path.join(full_checkpoint_dir, f"checkpoint_{it}"), ignore_errors=True)
             it -= 1
 
     # Accelerator object
     project_config = ProjectConfiguration(
         cfg.trainer.dir,
         automatic_checkpoint_naming=True,
-        total_limit=cfg.trainer.max_checkpoints,
+        total_limit=cfg.trainer.accelerate.max_checkpoints,
         iteration=it + 1,
     )
     accelerator = Accelerator(
@@ -121,7 +123,7 @@ def trainer(cfg: DictConfig) -> None:
     # Model, optimizer, and learning rate scheduler
     model = AMPLIFY(AMPLIFYConfig(**cfg.model, **cfg.tokenizer))
     optimizer = get_optimizer(model, **cfg.optimizer)
-    scheduler = get_scheduler(optimizer, **cfg.scheduler)
+    scheduler = get_scheduler(optimizer, lr=cfg.optimizer.lr, **cfg.scheduler)
 
     # Log the number of parameters
     accelerator.log({"model_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad)})
@@ -140,17 +142,19 @@ def trainer(cfg: DictConfig) -> None:
     # Train and validation Dataloaders
     train_dataloader = get_dataloader(
         **cfg.tokenizer,
+        **cfg.dataloader.train,
         **cfg.dataset.train,
         **cfg.trainer.train,
-        merge=True,
+        seed=cfg.seed,
         return_labels=False,
         dtype=dtype_pad_mask,
     )
     eval_dataloaders = get_dataloader(
         **cfg.tokenizer,
+        **cfg.dataloader.validation,
         **cfg.dataset.validation,
         **cfg.trainer.validation,
-        merge=False,
+        seed=cfg.seed,
         return_labels=False,
         dtype=dtype_pad_mask,
     )
@@ -165,7 +169,7 @@ def trainer(cfg: DictConfig) -> None:
 
     # Resume from the latest checkpoint
     skipped_train_dataloader = None
-    if cfg.trainer.resume and os.path.exists(os.path.join(cfg.trainer.dir, "checkpoints")):
+    if cfg.trainer.resume and os.path.exists(full_checkpoint_dir):
         accelerator.load_state()
         skipped_train_dataloader = accelerator.skip_first_batches(train_dataloader, metrics["num_batches_in_epoch"])
 
@@ -250,9 +254,7 @@ def trainer(cfg: DictConfig) -> None:
                     # https://deepspeed.readthedocs.io/en/latest/zero3.html#deepspeed.utils.safe_get_full_grad
                     if accelerator.distributed_type is DistributedType.DEEPSPEED:
                         metrics["grad_norm"] = model.get_global_grad_norm()
-                        metrics["weight_norm"] = (
-                            sum(safe_get_full_fp32_param(p).norm(2).item() ** 2 for p in model.parameters()) ** 0.5
-                        )
+                        metrics["weight_norm"] = sum(safe_get_full_fp32_param(p).norm(2).item() ** 2 for p in model.parameters()) ** 0.5
                     # DDP
                     else:
                         metrics["grad_norm"] = sum(p.grad.data.norm(2).item() ** 2 for p in model.parameters()) ** 0.5
@@ -272,8 +274,35 @@ def trainer(cfg: DictConfig) -> None:
                 optimizer.zero_grad()
 
                 # Save the model from the main process
-                if metrics["num_steps"] % cfg.trainer.save_steps == 0:
+                if metrics["num_steps"] % cfg.trainer.accelerate.save_steps == 0:
                     accelerator.save_state()
+
+                # Save the pytorch model
+                if metrics["train/steps"] % cfg.trainer.model.save_steps == 0:
+                    if cfg.trainer.model.max_checkpoints is not None:
+                        # Delete checkpoints if there are too many
+                        files = os.listdir(model_checkpoint_dir)
+                        iterations = [int(f) for f in files if f.isdigit()]
+                        iterations.sort()
+
+                        # Remove files with the smallest iterations until the limit is met
+                        while iterations is not None and len(iterations) >= cfg.trainer.model.max_checkpoints:
+                            file_to_remove = iterations.pop(0)
+                            shutil.rmtree(os.path.join(model_checkpoint_dir, str(file_to_remove)))
+                            print(
+                                f"Deleted old model checkpoint {file_to_remove} due to limit "
+                                f"(max_checkpoints = {cfg.trainer.model.max_checkpoints})"
+                            )
+                    # Save the checkpoint
+                    if accelerator.distributed_type is DistributedType.DEEPSPEED:
+                        model.save_checkpoint(model_checkpoint_dir, tag=metrics["train/steps"])
+                    else:
+                        path = os.path.join(model_checkpoint_dir, str(metrics["train/steps"]))
+                        os.makedirs(path, exist_ok=True)
+                        torch.save(
+                            model.state_dict(),
+                            os.path.join(path, "state_dict.pt"),
+                        )
 
                 if metrics["num_steps"] >= cfg.trainer.max_steps:
                     break

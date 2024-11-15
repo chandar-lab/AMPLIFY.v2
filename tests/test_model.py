@@ -37,11 +37,7 @@ def test__esm__trains_on_an_easy_task_with_decreasing_train_set_loss(
         "seed": 255,
         "dataset": {
             "train": {
-                "paths": {
-                    "dataset": os.path.join(
-                        this_dir, "example-data/easy-task-train.csv"
-                    )
-                },
+                "paths": {"dataset": os.path.join(this_dir, "example-data/easy-task-train.csv")},
                 "samples_before_next_set": None,
             },
             "validation": {
@@ -208,9 +204,7 @@ def test__esm__trains_on_an_easy_task_with_decreasing_train_set_loss(
     config = OmegaConf.create(initial_config_values)
 
     # verify that there is no pre-existing checkpoint
-    assert not os.path.exists(
-        os.path.join(training_run_output_path, "checkpoints/checkpoint_1")
-    )
+    assert not os.path.exists(os.path.join(training_run_output_path, "checkpoints/checkpoint_1"))
 
     # train for a few steps
     # to generate a checkpoint
@@ -218,9 +212,7 @@ def test__esm__trains_on_an_easy_task_with_decreasing_train_set_loss(
     trainer(config)
 
     # verify that a checkpoint was created
-    assert os.path.exists(
-        os.path.join(training_run_output_path, "checkpoints/checkpoint_1")
-    )
+    assert os.path.exists(os.path.join(training_run_output_path, "checkpoints/checkpoint_1"))
 
     log_path = os.path.join(training_run_output_path, "wandb/wandb/metrics.json")
     with open(log_path, "r") as f:
@@ -237,9 +229,7 @@ def test__esm__trains_on_an_easy_task_with_decreasing_train_set_loss(
         train_loss_series[1:],
         np.diff(train_loss_series),
     ):
-        assert (change < 0) or (
-            1e-2 > (change / loss)
-        ), f"Train loss increased beyond expected tolerance at index {n} in run"
+        assert (change < 0) or (1e-2 > (change / loss)), f"Train loss increased beyond expected tolerance at index {n} in run"
 
 
 def test__esm__saves_a_checkpoint_from_which_training_resumes(
@@ -257,11 +247,7 @@ def test__esm__saves_a_checkpoint_from_which_training_resumes(
         "seed": 255,
         "dataset": {
             "train": {
-                "paths": {
-                    "dataset": os.path.join(
-                        this_dir, "example-data/easy-task-train.csv"
-                    )
-                },
+                "paths": {"dataset": os.path.join(this_dir, "example-data/easy-task-train.csv")},
                 "samples_before_next_set": None,
             },
             "validation": {
@@ -428,9 +414,7 @@ def test__esm__saves_a_checkpoint_from_which_training_resumes(
     config = OmegaConf.create(initial_config_values)
 
     # verify that there is no pre-existing checkpoint
-    assert not os.path.exists(
-        os.path.join(training_run_output_path, "checkpoints/checkpoint_1")
-    )
+    assert not os.path.exists(os.path.join(training_run_output_path, "checkpoints/checkpoint_1"))
 
     # train for a few steps
     # to generate a checkpoint
@@ -438,26 +422,20 @@ def test__esm__saves_a_checkpoint_from_which_training_resumes(
     trainer(config)
 
     # verify that a checkpoint was created
-    assert os.path.exists(
-        os.path.join(training_run_output_path, "checkpoints/checkpoint_1")
-    )
+    assert os.path.exists(os.path.join(training_run_output_path, "checkpoints/checkpoint_1"))
 
     # and that it is the latest checkpoint so far
-    assert not os.path.exists(
-        os.path.join(training_run_output_path, "checkpoints/checkpoint_2")
-    )
+    assert not os.path.exists(os.path.join(training_run_output_path, "checkpoints/checkpoint_2"))
 
     # try to resume from that checkpoint
     # and train for ten more steps
     config.trainer.resume = True
     config.trainer.max_steps = config.trainer.max_steps + save_steps
-    config.trainer.save_steps = save_steps
+    config.trainer.accelerate.save_steps = save_steps
     trainer(config)
 
     # verify that new checkpoint was created
-    assert os.path.exists(
-        os.path.join(training_run_output_path, "checkpoints/checkpoint_2")
-    )
+    assert os.path.exists(os.path.join(training_run_output_path, "checkpoints/checkpoint_2"))
 
     log_path = os.path.join(training_run_output_path, "wandb/wandb/metrics.json")
     with open(log_path, "r") as f:

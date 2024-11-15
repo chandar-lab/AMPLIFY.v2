@@ -23,6 +23,7 @@ from amplify.dataset import get_dataloader
 from amplify.scheduler import get_scheduler
 from amplify.optimizer import get_optimizer
 
+
 def evaluate(
     model: torch.nn.Module,
     dataloader: torch.utils.data.DataLoader,
@@ -70,8 +71,10 @@ def trainer(cfg: DictConfig) -> None:
             it -= 1
 
     project_config = ProjectConfiguration(
-        cfg.trainer.dir, automatic_checkpoint_naming=True,
-        total_limit=cfg.trainer.max_checkpoints, iteration=it + 1,
+        cfg.trainer.dir,
+        automatic_checkpoint_naming=True,
+        total_limit=cfg.trainer.accelerate.max_checkpoints,
+        iteration=it + 1,
     )
     accelerator = Accelerator(
         step_scheduler_with_optimizer=False,
@@ -103,16 +106,23 @@ def trainer(cfg: DictConfig) -> None:
             dtype_class_weight = torch.bfloat16
 
     train_dataloader = get_dataloader(
-        **cfg.tokenizer, **cfg.dataset.train, **cfg.trainer.train,
-        merge=True, return_labels=False, dtype=dtype_pad_mask,
+        **cfg.tokenizer,
+        **cfg.dataset.train,
+        **cfg.trainer.train,
+        merge=True,
+        return_labels=False,
+        dtype=dtype_pad_mask,
     )
     eval_dataloaders = get_dataloader(
-        **cfg.tokenizer, **cfg.dataset.validation, **cfg.trainer.validation,
-        merge=False, return_labels=False, dtype=dtype_pad_mask,
+        **cfg.tokenizer,
+        **cfg.dataset.validation,
+        **cfg.trainer.validation,
+        merge=False,
+        return_labels=False,
+        dtype=dtype_pad_mask,
     )
 
-    model, optimizer, scheduler, train_dataloader = accelerator.prepare(
-        model, optimizer, scheduler, train_dataloader)
+    model, optimizer, scheduler, train_dataloader = accelerator.prepare(model, optimizer, scheduler, train_dataloader)
     eval_dataloaders = {k: accelerator.prepare(v) for k, v in eval_dataloaders.items()}
 
     train_loss_fn = get_loss(accelerator.device, **cfg.tokenizer, **cfg.trainer.train, dtype=dtype_class_weight)
@@ -131,10 +141,13 @@ def trainer(cfg: DictConfig) -> None:
 
     signal.signal(signal.SIGTERM, handler)
 
-    pbar = tqdm(desc="Train", unit="step", initial=metrics["num_steps"], total=cfg.trainer.max_steps,
-                disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process))
-
-    
+    pbar = tqdm(
+        desc="Train",
+        unit="step",
+        initial=metrics["num_steps"],
+        total=cfg.trainer.max_steps,
+        disable=(cfg.trainer.disable_tqdm or not accelerator.is_main_process),
+    )
 
     while cfg.trainer.max_steps > metrics["num_steps"]:
         dataloader = train_dataloader if skipped_train_dataloader is None else skipped_train_dataloader
@@ -157,7 +170,7 @@ def trainer(cfg: DictConfig) -> None:
                 scheduler.step()
                 optimizer.zero_grad()
 
-                if metrics["num_steps"] % cfg.trainer.save_steps == 0 or metrics["num_steps"] >= cfg.trainer.max_steps:
+                if metrics["num_steps"] % cfg.trainer.accelerate.save_steps == 0 or metrics["num_steps"] >= cfg.trainer.max_steps:
                     if accelerator.is_main_process:
                         print(f"Saving model at step {metrics['num_steps']}...")
                         save_model(model, cfg)

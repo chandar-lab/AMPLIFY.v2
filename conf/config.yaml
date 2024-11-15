@@ -2,6 +2,7 @@
 defaults:
   - _self_
   - dataset: uniref100+
+  - dataloader: iterable
   - tokenizer: amplify_tokenizer
   - model: 
     - amplify

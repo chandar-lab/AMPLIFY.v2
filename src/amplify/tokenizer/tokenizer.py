@@ -1,9 +1,14 @@
 import torch
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 from torch import Tensor
 
+import numpy as np
 
-class ProteinTokenizer(object):
+# HuggingFace
+from transformers import PreTrainedTokenizer
+
+
+class ProteinTokenizer(PreTrainedTokenizer):
     def __init__(
         self,
         vocab_path: str,
@@ -13,6 +18,7 @@ class ProteinTokenizer(object):
         eos_token_id: int,
         unk_token_id: int,
         other_special_token_ids: Optional[List[int]],
+        ambiguous_tokens: str = "XBOUZJ",
         **kwargs,
     ):
         """Vocabulary comprising the amino acids, and the special tokens <unk>, <bos>, <eos>, <pad> and <mask>.
@@ -63,6 +69,9 @@ class ProteinTokenizer(object):
         if other_special_token_ids is not None:
             self.special_token_ids.update(other_special_token_ids)
 
+        self.ambiguous_tokens_ids = [self._token_to_id[tok] for tok in ambiguous_tokens]
+        self.ambiguous_tokens_ids.append(self.unk_token_id)
+
     def __len__(self) -> int:
         return len(self._token_to_id)
 
@@ -78,30 +87,60 @@ class ProteinTokenizer(object):
         max_length: Optional[int] = None,
         add_special_tokens: bool = True,
         random_truncate: bool = True,
+        return_position_ids: bool = False,
+        remove_ambiguous: bool = False,
+        return_special_tokens_mask: bool = True,
         **kwargs,
-    ) -> Union[List[int], Tensor]:
+    ) -> Dict[Tensor]:
         """Encodes a list of tokens into a list or tensor of token indices.
 
         Args:
             tokens (List[str]): Sequence of tokens to encode.
             max_length (Optional[int], optional): Truncate the sequence to the specified length. Defaults to None.
-            add_special_tokens (bool, optional): Add special tokens <bos> and <eos> at the start and end.. Defaults to True.
-            random_truncate (bool, optional): Truncate the sequence to a random subsequence of if longer than truncate.
+            add_special_tokens (bool, optional): Add special tokens <bos> and <eos> at the start and end. Defaults to True.
+            random_truncate (bool, optional): Truncate the sequence to a random subsequence if longer than max_length.
+            remove_ambiguous (bool, optional):
+            return_special_tokens_mask (bool, optional):
             Defaults to True.
 
         Returns:
             Union[List[int], Tensor]: Token indices.
         """
+        # Convert to ids
         token_ids = list(map(self.token_to_id, tokens))
+
+        # Add BOS and EOS tokens
         if add_special_tokens:
             token_ids = [self.bos_token_id] + token_ids + [self.eos_token_id]
+
+        # Truncate
+        offset = 0
         if max_length is not None and max_length < len(token_ids):
             if random_truncate:
                 offset = int(torch.randint(0, len(token_ids) - max_length, (1,)).item())
-            else:
-                offset = 0
             token_ids = token_ids[offset : offset + max_length]
-        return torch.as_tensor(token_ids, dtype=torch.long)
+
+        token_ids = torch.as_tensor(token_ids, dtype=torch.long)
+
+        # Store the position indexes
+        if return_position_ids:
+            position_ids = torch.as_tensor(range(offset, offset + max_length), dtype=torch.long)
+
+        # Optionally remove ambiguous or unknown amino acids
+        if remove_ambiguous:
+            mask = ~np.isin(token_ids, self.ambiguous_tokens_ids)
+
+            token_ids = token_ids[mask]
+            if return_position_ids:
+                position_ids = position_ids[mask]
+
+        output = {"input_ids": token_ids}
+        if return_position_ids:
+            output["input_positions"] = position_ids
+        if return_special_tokens_mask:
+            output["special_tokens_mask"] = torch.isin(token_ids, torch.tensor(self.special_token_ids))
+
+        return output
 
     def decode(
         self,

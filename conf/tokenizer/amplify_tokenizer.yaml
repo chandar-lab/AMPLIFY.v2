@@ -6,3 +6,5 @@ bos_token_id: 3
 eos_token_id: 4
 unk_token_id: 1
 other_special_token_ids: null
+remove_ambiguous: false
+return_position_ids: false

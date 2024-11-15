@@ -16,6 +16,7 @@ from ..tokenizer import ProteinTokenizer
 from transformers import PreTrainedModel, PretrainedConfig
 from transformers.modeling_outputs import MaskedLMOutput
 
+
 class DotDict(dict):
     """Dictionary that supports the dot notation to access attributes (similarly to HuggingFace)."""
 
@@ -23,8 +24,10 @@ class DotDict(dict):
     __setattr__ = dict.__setitem__
     __delattr__ = dict.__delitem__
 
+
 class AMPLIFYConfig(PretrainedConfig):
     model_type = "AMPLIFY"
+
     # All config parameters must have a default value.
     def __init__(
         self,
@@ -48,7 +51,7 @@ class AMPLIFYConfig(PretrainedConfig):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        
+
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
@@ -66,7 +69,7 @@ class AMPLIFYConfig(PretrainedConfig):
         self.att_bias = att_bias
         self.pad_token_id = pad_token_id
         self.max_length = max_length
-        
+
 
 class EncoderBlock(nn.Module):
     """Transformer encoder block."""
@@ -93,9 +96,7 @@ class EncoderBlock(nn.Module):
         self.d_head = config.hidden_size // config.num_attention_heads
 
         # Attention
-        self.q = nn.Linear(in_features=config.hidden_size, out_features=config.hidden_size, bias=config.att_bias)
-        self.k = nn.Linear(in_features=config.hidden_size, out_features=config.hidden_size, bias=config.att_bias)
-        self.v = nn.Linear(in_features=config.hidden_size, out_features=config.hidden_size, bias=config.att_bias)
+        self.qkv = nn.Linear(in_features=config.hidden_size, out_features=config.hidden_size * 3, bias=False)
         self.wo = nn.Linear(in_features=config.hidden_size, out_features=config.hidden_size, bias=config.att_bias)
         self.resid_dropout = nn.Dropout(config.dropout_prob)
 
@@ -108,12 +109,7 @@ class EncoderBlock(nn.Module):
             multiple_of = 8
             intermediate_size = int(2 * config.intermediate_size / 3)
             intermediate_size = multiple_of * ((intermediate_size + multiple_of - 1) // multiple_of)
-            self.ffn = SwiGLU(
-                config.hidden_size,
-                intermediate_size,
-                config.hidden_size,
-                bias=config.ffn_bias
-            )
+            self.ffn = SwiGLU(config.hidden_size, intermediate_size, config.hidden_size, bias=config.ffn_bias)
         elif act == "relu":
             self.ffn = nn.Sequential(
                 nn.Linear(config.hidden_size, config.intermediate_size, bias=config.ffn_bias),
@@ -129,8 +125,12 @@ class EncoderBlock(nn.Module):
         else:
             raise ValueError(f"Unsupported hidden_act: {config.hidden_act}")
 
-        self.attention_norm = RMSNorm(config.hidden_size, config.norm_eps) if config.rms_norm else nn.LayerNorm(config.hidden_size, config.norm_eps)
-        self.ffn_norm = RMSNorm(config.hidden_size, config.norm_eps) if config.rms_norm else nn.LayerNorm(config.hidden_size, config.norm_eps)
+        self.attention_norm = (
+            RMSNorm(config.hidden_size, config.norm_eps) if config.rms_norm else nn.LayerNorm(config.hidden_size, config.norm_eps)
+        )
+        self.ffn_norm = (
+            RMSNorm(config.hidden_size, config.norm_eps) if config.rms_norm else nn.LayerNorm(config.hidden_size, config.norm_eps)
+        )
 
         self.ffn_dropout = nn.Dropout(config.dropout_prob)
 
@@ -145,9 +145,7 @@ class EncoderBlock(nn.Module):
         xq, xk, xv = self.q(x), self.k(x), self.v(x)
 
         # Reshape for rotary embeddings
-        xq = xq.view(batch_size, seq_len, self.config.num_attention_heads, self.d_head)
-        xk = xk.view(batch_size, seq_len, self.config.num_attention_heads, self.d_head)
-        xv = xv.view(batch_size, seq_len, self.config.num_attention_heads, self.d_head)
+        xq, xk, xv = self.qkv(x).view(batch_size, seq_len, self.config.num_attention_heads, self.config.dim_head * 3).chunk(3, axis=-1)
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis)
 
         attn = memory_efficient_attention(
@@ -185,9 +183,10 @@ class AMPLIFYPreTrainedModel(PreTrainedModel):
 class AMPLIFY(AMPLIFYPreTrainedModel):
     """The main model class.
 
-       Args:
-          config (amplify.model.amplify.AMPLIFYConfig): model configuration, usually defined from the Hydra configuration.
+    Args:
+       config (amplify.model.amplify.AMPLIFYConfig): model configuration, usually defined from the Hydra configuration.
     """
+
     def __init__(self, config: AMPLIFYConfig, **kwargs):
         super().__init__(config)
 
@@ -196,22 +195,25 @@ class AMPLIFY(AMPLIFYPreTrainedModel):
         self.encoder = nn.Embedding(config.vocab_size, config.hidden_size, padding_idx=config.pad_token_id)
 
         if config.layer_norm_after_embedding:
-            self.layer_norm_1 = RMSNorm(config.hidden_size, config.norm_eps) if config.rms_norm else nn.LayerNorm(config.hidden_size, config.norm_eps)
+            self.layer_norm_1 = (
+                RMSNorm(config.hidden_size, config.norm_eps) if config.rms_norm else nn.LayerNorm(config.hidden_size, config.norm_eps)
+            )
 
         self.transformer_encoder = nn.ModuleList()
         for _ in range(config.num_hidden_layers):
             self.transformer_encoder.append(EncoderBlock(config))
 
         if config.layer_norm_before_last_layer:
-            self.layer_norm_2 = RMSNorm(config.hidden_size, config.norm_eps) if config.rms_norm else nn.LayerNorm(config.hidden_size, config.norm_eps)
+            self.layer_norm_2 = (
+                RMSNorm(config.hidden_size, config.norm_eps) if config.rms_norm else nn.LayerNorm(config.hidden_size, config.norm_eps)
+            )
 
         self.decoder = nn.Linear(config.hidden_size, config.vocab_size)
 
         self.freqs_cis = precompute_freqs_cis(config.hidden_size // config.num_attention_heads, config.max_length)
-        
+
         # Initialize weights and apply final processing
         self.post_init()
-
 
     @classmethod
     def load(cls, checkpoint_path: str, config_path: str):
@@ -231,7 +233,6 @@ class AMPLIFY(AMPLIFYPreTrainedModel):
         model.load_state_dict(state_dict)
         tokenizer = ProteinTokenizer(**cfg["tokenizer"])
         return model, tokenizer
-
 
     def forward(self, src, pad_mask=None, output_hidden_states=False, output_attentions=False):
         # Initialize
@@ -265,4 +266,3 @@ class AMPLIFY(AMPLIFYPreTrainedModel):
 
         # Return logits or the output of the last hidden layer
         return MaskedLMOutput(logits=logits, hidden_states=hidden_states, attentions=attentions)
-

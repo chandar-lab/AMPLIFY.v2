@@ -5,7 +5,6 @@ from typing import List, Tuple
 from ..tokenizer import ProteinTokenizer
 
 
-
 class DataCollatorMLM(object):
     def __init__(
         self,

@@ -1,0 +1,11 @@
+train:
+  iterable: false
+  pre_shuffle: true
+  shuffle: false
+  on_the_fly_tokenization: true
+
+validation:
+  iterable: false
+  pre_shuffle: true
+  shuffle: false
+  on_the_fly_tokenization: true
